@@ -1,56 +1,41 @@
-package com.freetalk.presenter.fragment
+package com.freetalk.presenter.fragment.board
 
 import android.Manifest
-import android.animation.AnimatorSet
-import android.animation.ObjectAnimator
 import android.app.Activity.RESULT_OK
 import android.app.AlertDialog
-import android.app.ProgressDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.provider.MediaStore
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.saveable.autoSaver
-import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
-import com.bumptech.glide.Glide
+import com.freetalk.data.UserSingleton
 import com.freetalk.data.entity.BoardEntity
-import com.freetalk.data.remote.BoardResponse
-import com.freetalk.data.remote.FirebaseBoardRemoteDataSourceImpl
-import com.freetalk.data.remote.FirebaseUserRemoteDataSourceImpl
-import com.freetalk.databinding.FragmentBoardBinding
+import com.freetalk.data.remote.*
 import com.freetalk.databinding.FragmentBoardWriteBinding
-import com.freetalk.databinding.FragmentHomeBinding
 import com.freetalk.presenter.activity.EndPoint
 import com.freetalk.presenter.activity.Navigable
 import com.freetalk.presenter.adapter.BoardWriteAdapter
 import com.freetalk.presenter.viewmodel.*
 import com.freetalk.repository.FirebaseBoardDataRepositoryImpl
-import com.freetalk.repository.FirebaseUserDataRepositoryImpl
-import com.freetalk.usecase.BoardUseCaseImpl
-import com.freetalk.usecase.UserUseCaseImpl
-import com.google.firebase.auth.ktx.auth
+import com.freetalk.repository.FirebaseImageDataRepositoryImpl
+import com.freetalk.usecase.*
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import com.google.firebase.storage.FirebaseStorage
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import java.time.LocalDateTime
 import java.util.*
 
 class BoardWriteFragment : Fragment() {
@@ -61,11 +46,20 @@ class BoardWriteFragment : Fragment() {
     private var adapter: BoardWriteAdapter? = null
     private val imgList = mutableListOf<Uri>()
     private val boardViewModel: BoardViewModel by lazy {
-        val firebaseBoardRemoteDataSourceImpl = FirebaseBoardRemoteDataSourceImpl(Firebase.firestore, FirebaseStorage.getInstance())
+
+        // dataSource
+        val firebaseBoardRemoteDataSourceImpl = FirebaseBoardRemoteDataSourceImpl(Firebase.firestore)
+        val firebaseImageDataSourceImpl = FirebaseImageRemoteDataSourceImpl(FirebaseStorage.getInstance())
+        // repository
         val firebaseBoardDataRepositoryImpl =
             FirebaseBoardDataRepositoryImpl(firebaseBoardRemoteDataSourceImpl)
-        val firebaseBoardCaseImpl = BoardUseCaseImpl(firebaseBoardDataRepositoryImpl)
-        val factory = BoardViewModelFactory(firebaseBoardCaseImpl)
+        val firebaseImageDataRepositoryImpl = FirebaseImageDataRepositoryImpl(firebaseImageDataSourceImpl)
+        // usecase
+        val writeContentUseCaseImpl = WriteContentUseCaseImpl(firebaseBoardDataRepositoryImpl)
+        val uploadImagesUseCaseImpl = UploadImagesUseCaseImpl(firebaseImageDataRepositoryImpl)
+        val updateContentUseCaseImpl = UpdateContentUseCaseImpl(firebaseBoardDataRepositoryImpl)
+        val updateImagesContentUseCaseImpl = UpdateImageContentUseCaseImpl(updateContentUseCaseImpl, uploadImagesUseCaseImpl)
+        val factory = BoardViewModelFactory(writeContentUseCaseImpl, updateImagesContentUseCaseImpl)
         ViewModelProvider(requireActivity(), factory).get(BoardViewModel::class.java)
     }
 
@@ -97,7 +91,7 @@ class BoardWriteFragment : Fragment() {
                                 Toast.LENGTH_LONG
                             ).show();
                         } else {
-                            (0..count).forEach {
+                            (0 until count).forEach {
                                 val uri = clipData.getItemAt(it).uri
                                 imgList.add(uri)
                             }
@@ -167,19 +161,20 @@ class BoardWriteFragment : Fragment() {
                     }
                     else -> {
                         viewLifecycleOwner.lifecycleScope.launch {
-                            val boardEntity = BoardEntity(author = "테스트 계정",
+                            val boardInsertForm = BoardInsetForm(author = UserSingleton.userEntity,
                                 title = binding.titleEditText.text.toString(),
                                 content = binding.contextEditText.text.toString(),
-                                image = imgList,
                                 createTime = Date(System.currentTimeMillis()),
                                 editTime = null
                             )
-                            showProgressBar()
-                            boardViewModel.insert(boardEntity)
+                            Log.d("boardWriteFragment", boardInsertForm.createTime.toString())
+                            boardViewModel.insert(boardInsertForm, ImagesRequest(imgList))
+                        }
+
                         }
                     }
                 }
-            }
+
             recyclerviewImage.adapter = adapter
             subscribe()
         }
@@ -208,15 +203,16 @@ class BoardWriteFragment : Fragment() {
                     boardViewModel.viewEvent.collect {
                         when(it) {
                             is BoardViewEvent.Insert -> {
-                                when(it.boardInsertData.respond) {
-                                    is BoardResponse.InsertSuccess -> {
-                                        (requireActivity() as? Navigable)?.navigateFragment(EndPoint.Board(1))
-                                        hideProgressBar()
-                                    }
-                                    else -> {}
+                                (requireActivity() as? Navigable)?.navigateFragment(EndPoint.Board(1))
+                                }
+                            is BoardViewEvent.Error -> {
+                                when(it.errorCode) {
+                                    is FailInsertException -> Toast.makeText(
+                                        requireActivity(), "인서트에 실패 했습니다",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 }
                             }
-                            else -> {}
                         }
                     }
         }
